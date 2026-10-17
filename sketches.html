@@ -38,35 +38,54 @@ header.slim .sub{margin:0;font-size:.85rem;text-align:center;white-space:nowrap;
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const D = window.GALLERY_DATA || {categories: [], images: []};
-const cats = D.categories || [];
-const imgs = (D.images || []).filter(i => i.on !== false);
+const cats = (D.categories || []).map(c => ({...c, subs: c.subs || []}));
+const catIdx = id => { const x = cats.findIndex(c => c.id === id); return x < 0 ? 1e9 : x; };
+const subIdx = i => { const c = cats.find(c => c.id === i.cat); return c && i.sub ? c.subs.findIndex(s => s.id === i.sub) : -1; };
+// order: category, then sub-menu, then the order number (lower first)
+const imgs = (D.images || []).map((i, x) => ({...i, _x: x})).filter(i => i.on !== false)
+  .sort((a, b) => catIdx(a.cat) - catIdx(b.cat) || subIdx(a) - subIdx(b) || (a.order ?? 1e9) - (b.order ?? 1e9) || a._x - b._x);
 const catName = id => (cats.find(c => c.id === id) || {name: 'Uncategorized'}).name;
-let view = [], cur = 0;
+const subName = (cid, sid) => { const c = cats.find(c => c.id === cid), s = c && c.subs.find(s => s.id === sid); return s ? s.name : ''; };
+let view = [], cur = 0, sub = '';
 
-// Default: #hash from a link, else the default set in Manage (Miscellaneous), else All
+// Start: #category or #category/submenu from a link, else the default set in Manage (Miscellaneous), else All
 let cat = (() => {
-  const h = decodeURIComponent(location.hash.slice(1));
-  if (h === 'all' || cats.some(c => c.id === h)) return h;
+  const [h, s] = decodeURIComponent(location.hash.slice(1)).split('/');
+  if (h === 'all' || cats.some(c => c.id === h)){ if (cats.some(c => c.id === h && c.subs.some(x => x.id === s))) sub = s; return h; }
   if (cats.some(c => c.id === D.defaultCat)) return D.defaultCat;
   const m = cats.find(c => /^miscellaneous$/i.test(c.name));
   return m ? m.id : 'all';
 })();
 
 function render(){
-  const n = id => id === 'all' ? imgs.length : imgs.filter(i => i.cat === id).length;
-  $('menu').innerHTML = [{id:'all', name:'All'}, ...cats].filter(c => c.id === 'all' || c.id === cat || n(c.id) > 0)
-    .map(c => `<button class="chip" data-c="${esc(c.id)}" aria-pressed="${cat === c.id}">${esc(c.name)}<b>${n(c.id)}</b></button>`).join('');
-  view = imgs.filter(i => cat === 'all' || i.cat === cat);
-  $('count').textContent = `${view.length} sketch${view.length === 1 ? '' : 'es'}` + (cat === 'all' ? '' : ' in ' + catName(cat));
+  // a category counts / shows only its own images; a sub-menu only its own
+  const cnt = (c, s) => c === 'all' ? imgs.length : imgs.filter(i => i.cat === c && (i.sub || '') === (s || '')).length;
+  // a category that has no images of its own opens its first sub-menu that has some
+  if (cat !== 'all' && !sub && !cnt(cat, '')){ const c = cats.find(c => c.id === cat), f = c && c.subs.find(s => cnt(cat, s.id)); if (f) sub = f.id; }
+  const chip = (c, s, name, n, on, cur) => `<button class="chip${s ? ' sub' : ''}" data-c="${esc(c)}" data-s="${esc(s)}" aria-pressed="${on}"${cur ? ' aria-current="true"' : ''}>${esc(name)}<b>${n}</b></button>`;
+  let h = chip('all', '', 'All', cnt('all', ''), cat === 'all');
+  cats.forEach(c => {
+    const n = cnt(c.id, ''); if (c.id !== cat && !imgs.some(i => i.cat === c.id)) return;
+    h += chip(c.id, '', c.name, n, cat === c.id && !sub, cat === c.id && !!sub);
+    if (c.id === cat) {
+      const ss = c.subs.filter(s => s.id === sub || cnt(c.id, s.id));
+      if (ss.length) h += '<div class="subs">' + ss.map(s => chip(c.id, s.id, s.name, cnt(c.id, s.id), sub === s.id)).join('') + '</div>';
+    }
+  });
+  $('menu').innerHTML = h;
+  view = cat === 'all' ? imgs : imgs.filter(i => i.cat === cat && (i.sub || '') === sub);
+  $('count').textContent = `${view.length} sketch${view.length === 1 ? '' : 'es'}` + (cat === 'all' ? '' : ' in ' + catName(cat) + (sub ? ' › ' + subName(cat, sub) : ''));
+  const tag = i => cat === 'all' ? catName(i.cat) + (i.sub ? ' › ' + subName(i.cat, i.sub) : '') : '';
   $('grid').innerHTML = view.length ? view.map(i => `
     <figure class="card">
       <img src="${esc(i.src)}" alt="${esc(i.caption || 'Sketch')}" loading="lazy" tabindex="0" data-id="${esc(i.id)}">
-      ${i.caption || cat === 'all' ? `<figcaption>${cat === 'all' ? `<span class="tag">${esc(catName(i.cat))}</span>` : ''}${esc(i.caption)}</figcaption>` : ''}
-    </figure>`).join('') : '<div class="empty">No sketches in this category yet.</div>';
+      ${i.caption || tag(i) ? `<figcaption>${tag(i) ? `<span class="tag">${esc(tag(i))}</span>` : ''}${esc(i.caption)}</figcaption>` : ''}
+    </figure>`).join('') : '<div class="empty">No sketches here yet.</div>';
 }
 $('menu').addEventListener('click', e => {
   const b = e.target.closest('.chip'); if (!b) return;
-  cat = b.dataset.c; history.replaceState(null, '', '#' + encodeURIComponent(cat)); render();
+  cat = b.dataset.c; sub = b.dataset.s || '';
+  history.replaceState(null, '', '#' + encodeURIComponent(cat) + (sub ? '/' + encodeURIComponent(sub) : '')); render();
   if (innerWidth < 900) $('grid').scrollIntoView({behavior: 'smooth', block: 'start'});
 });
 $('grid').addEventListener('click', e => { if (e.target.tagName === 'IMG' && !e.target.classList.contains('broken')) openLb(e.target.dataset.id); });
@@ -78,7 +97,7 @@ function closeLb(){ $('lb').classList.remove('open'); document.body.style.overfl
 function showLb(){
   const i = view[cur]; if (!i) return closeLb();
   $('lbi').src = i.src; $('lbi').alt = i.caption || 'Sketch'; $('lbt').textContent = i.caption || '';
-  $('lbc').textContent = `${cur + 1} / ${view.length}  ·  ${catName(i.cat)}`;
+  $('lbc').textContent = `${cur + 1} / ${view.length}  ·  ${catName(i.cat)}${i.sub ? ' › ' + subName(i.cat, i.sub) : ''}`;
 }
 const step = d => { cur = (cur + d + view.length) % view.length; showLb(); };
 $('lbp').onclick = () => step(-1); $('lbn').onclick = () => step(1); $('lbx').onclick = closeLb;
